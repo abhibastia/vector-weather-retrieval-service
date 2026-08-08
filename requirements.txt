@@ -1,0 +1,18 @@
+# Databricks Apps installs this at deploy time. Order matters: the CPU-only
+# PyTorch index is declared FIRST so `torch` (pulled in transitively by
+# sentence-transformers) resolves to the ~200MB CPU wheel instead of the
+# ~2.5GB CUDA build. On Databricks Apps compute there is no GPU, and the
+# CUDA wheel is large enough to blow the app's build timeout.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+databricks-sdk>=0.30.0
+psycopg2-binary>=2.9.9
+flask>=3.0.3
+requests>=2.32.3
+python-dotenv>=1.0.1
+
+# Query-time embedding. Must stay byte-for-byte the same model family as the
+# ingestion job (notebooks/ingest_weather_embeddings.py) or the vectors in
+# weather_embeddings are not comparable to the query vector.
+sentence-transformers>=3.0.0
+torch>=2.2.0

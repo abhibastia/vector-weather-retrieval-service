@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vector Weather Retrieval Service</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #16181d; --muted: #5c6370;
+    --line: #dfe3e8; --accent: #1f6feb; --accent-ink: #ffffff;
+    --alert: #b3261e; --forecast: #1a7f5a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12141a; --panel: #1b1e26; --ink: #e8eaed; --muted: #9aa1ad;
+      --line: #2c313c; --accent: #4d8ef7; --accent-ink: #0d1017;
+      --alert: #f2857c; --forecast: #5fd0a0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  p.sub { color: var(--muted); margin: 0 0 1.5rem; }
+  section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 1.1rem 1.2rem; margin-bottom: 1.1rem;
+  }
+  h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .05em;
+       color: var(--muted); margin: 0 0 .8rem; }
+  label { display: block; font-size: .82rem; color: var(--muted); margin-bottom: .3rem; }
+  input, select, textarea {
+    width: 100%; padding: .55rem .65rem; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--bg); color: var(--ink);
+    font: inherit; margin-bottom: .8rem;
+  }
+  .row { display: flex; gap: .8rem; flex-wrap: wrap; }
+  .row > div { flex: 1 1 160px; }
+  button {
+    background: var(--accent); color: var(--accent-ink); border: 0;
+    border-radius: 6px; padding: .55rem 1.1rem; font: inherit;
+    font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .55; cursor: progress; }
+  button.ghost { background: transparent; color: var(--accent);
+                 border: 1px solid var(--line); }
+  .out { margin-top: .9rem; }
+  .card { border: 1px solid var(--line); border-radius: 8px;
+          padding: .7rem .85rem; margin-bottom: .6rem; }
+  .card h3 { font-size: .95rem; margin: 0 0 .3rem; }
+  .meta { font-size: .78rem; color: var(--muted); margin-bottom: .45rem;
+          display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+  .tag { font-size: .7rem; font-weight: 700; text-transform: uppercase;
+         letter-spacing: .04em; padding: .12rem .4rem; border-radius: 4px;
+         border: 1px solid currentColor; }
+  .tag.alert { color: var(--alert); }
+  .tag.forecast { color: var(--forecast); }
+  .score { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .bar { height: 4px; border-radius: 2px; background: var(--line);
+         overflow: hidden; margin-bottom: .5rem; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .chunk { font-size: .88rem; white-space: pre-wrap; }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+        padding: .7rem; overflow-x: auto; font-size: .8rem; margin: 0; }
+  .note { font-size: .82rem; color: var(--muted); }
+  .err { color: var(--alert); font-size: .86rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Vector Weather Retrieval Service</h1>
+  <p class="sub">
+    NWS narrative text &rarr; Lakebase pgvector &rarr; semantic search.
+    Sync first, run the embedding job, then search.
+  </p>
+
+  <section>
+    <h2>1 &middot; Harvest</h2>
+    <label for="locations">Locations (semicolon separated)</label>
+    <input id="locations" value="{{ default_locations | join('; ') }}"
+           list="cities" placeholder="Chicago, IL; Austin, TX; 25.76,-80.19">
+    <datalist id="cities">
+      {% for city in known_cities %}<option value="{{ city }}">{% endfor %}
+    </datalist>
+    <div class="row">
+      <div>
+        <label for="limit">Max documents per location</label>
+        <input id="limit" type="number" value="50" min="1" max="200">
+      </div>
+    </div>
+    <button id="syncBtn" onclick="doSync()">Sync from NWS</button>
+    <div class="out" id="syncOut"></div>
+    <p class="note">
+      Syncing only writes raw text. Vectors are produced by the batch job
+      (<code>notebooks/ingest_weather_embeddings.py</code>).
+    </p>
+  </section>
+
+  <section>
+    <h2>2 &middot; Retrieve</h2>
+    <label for="query">Query</label>
+    <input id="query" value="flash flood risk this weekend"
+           onkeydown="if(event.key==='Enter') doSearch()">
+    <div class="row">
+      <div>
+        <label for="topk">top_k (1&ndash;20)</label>
+        <input id="topk" type="number" value="5" min="1" max="20">
+      </div>
+      <div>
+        <label for="srctype">Source type</label>
+        <select id="srctype">
+          <option value="">any</option>
+          <option value="alert">alert</option>
+          <option value="forecast">forecast</option>
+        </select>
+      </div>
+    </div>
+    <button id="searchBtn" onclick="doSearch()">Search</button>
+    <button class="ghost" id="answerBtn" onclick="doAnswer()">Summarize (RAG)</button>
+    <div class="out" id="searchOut"></div>
+  </section>
+</main>
+
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function post(url, body) {
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)
+  });
+  // The app's error handler always returns JSON, but a platform-level failure
+  // (502 from the proxy, say) can still deliver HTML - don't let .json() throw.
+  const text = await r.text();
+  try { return {ok: r.ok, data: JSON.parse(text)}; }
+  catch { return {ok: false, data: {error: text.slice(0, 400)}}; }
+}
+
+function busy(id, on, label) {
+  const b = document.getElementById(id);
+  b.disabled = on;
+  b.textContent = on ? "Working…" : label;
+}
+
+function parseLocations() {
+  return document.getElementById("locations").value
+    .split(";").map(s => s.trim()).filter(Boolean);
+}
+
+async function doSync() {
+  const out = document.getElementById("syncOut");
+  out.innerHTML = "";
+  busy("syncBtn", true, "Sync from NWS");
+  const {ok, data} = await post("/weather/sync", {
+    locations: parseLocations(),
+    limit: Number(document.getElementById("limit").value) || 50
+  });
+  busy("syncBtn", false, "Sync from NWS");
+  if (!ok) { out.innerHTML = `<p class="err">${esc(data.error)}</p>`; return; }
+  out.innerHTML = `<pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
+}
+
+function searchBody() {
+  const st = document.getElementById("srctype").value;
+  const body = {
+    query: document.getElementById("query").value,
+    top_k: Number(document.getElementById("topk").value) || 5
+  };
+  if (st) body.source_type = st;
+  return body;
+}
+
+function renderResults(data) {
+  let html = "";
+  if (data.warning) html += `<p class="err">${esc(data.warning)}</p>`;
+  for (const r of data.results || []) {
+    const pct = Math.max(0, Math.min(1, r.similarity)) * 100;
+    html += `
+      <div class="card">
+        <h3>${esc(r.headline || r.event || r.id)}</h3>
+        <div class="meta">
+          <span class="tag ${esc(r.source_type)}">${esc(r.source_type)}</span>
+          <span>${esc(r.location)}</span>
+          <span class="score">${Number(r.similarity).toFixed(4)}</span>
+        </div>
+        <div class="bar"><i style="width:${pct.toFixed(1)}%"></i></div>
+        <div class="chunk">${esc(r.chunk_text)}</div>
+      </div>`;
+  }
+  return html || `<p class="note">No results.</p>`;
+}
+
+async function doSearch() {
+  const out = document.getElementById("searchOut");
+  out.innerHTML = "";
+  busy("searchBtn", true, "Search");
+  const {ok, data} = await post("/weather/search", searchBody());
+  busy("searchBtn", false, "Search");
+  out.innerHTML = ok ? renderResults(data)
+                     : `<p class="err">${esc(data.error)}</p>`;
+}
+
+async function doAnswer() {
+  const out = document.getElementById("searchOut");
+  out.innerHTML = "";
+  busy("answerBtn", true, "Summarize (RAG)");
+  const {ok, data} = await post("/weather/answer", searchBody());
+  busy("answerBtn", false, "Summarize (RAG)");
+  if (!ok) { out.innerHTML = `<p class="err">${esc(data.error)}</p>`; return; }
+  let html = "";
+  if (data.answer) {
+    html += `<div class="card"><h3>Answer</h3>
+             <div class="chunk">${esc(data.answer)}</div>
+             <div class="meta" style="margin-top:.5rem">
+               via ${esc(data.endpoint)}</div></div>`;
+  }
+  out.innerHTML = html + renderResults({results: data.sources,
+                                        warning: data.warning});
+}
+</script>
+</body>
+</html>

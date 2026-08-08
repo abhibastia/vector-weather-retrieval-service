@@ -1,0 +1,51 @@
+# Scheduled job that turns rows in weather_documents into pgvector embeddings.
+#
+# SERVERLESS ON PURPOSE. A `job_clusters` block with `new_cluster:
+# {node_type_id: i3.xlarge, num_workers: 2}` cannot be deployed on Databricks
+# Free Edition, which has no classic compute - the deploy fails outright.
+# Omitting every compute key makes the notebook task run on serverless, which
+# is the only option available here (and is a better fit anyway: this job is a
+# few seconds of CPU, and a serverless task does not pay a 5-minute cluster
+# spin-up).
+#
+# Python dependencies come from the notebook's own `%pip install` cell rather
+# than an `environment` block, because `environment_key` applies to
+# spark_python_task / python_wheel_task, not to notebook_task.
+
+resources:
+  jobs:
+    ingest_weather_embeddings_job:
+      name: "[${bundle.target}] Ingest Weather Embeddings"
+
+      # Alerts change fast; forecasts are reissued roughly every 6 hours. Every
+      # 6 hours keeps the vector store roughly in step with the source without
+      # burning Free Edition compute quota.
+      schedule:
+        quartz_cron_expression: "0 0 0/6 * * ?"
+        timezone_id: "UTC"
+        # Left PAUSED so deploying this bundle cannot start consuming quota
+        # unattended. Flip to UNPAUSED once you have watched a manual run pass.
+        pause_status: PAUSED
+
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+
+      # The job is not idempotent across concurrent runs: two runs could select
+      # the same unembedded documents and duplicate the encode work.
+      max_concurrent_runs: 1
+
+      tasks:
+        - task_key: ingest_weather_embeddings
+          notebook_task:
+            notebook_path: ../notebooks/ingest_weather_embeddings.py
+            base_parameters:
+              documents_table: "weather_documents"
+              embeddings_table: "weather_embeddings"
+              embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+              lakebase_secret_scope: "database"
+              lakebase_secret_key: "lakebase-url"
+              chunk_size: "800"
+              chunk_overlap: "100"
+              batch_size: "64"
+              rebuild_all: "false"
