@@ -104,19 +104,30 @@ def main() -> None:
     rows = []
     for doc in documents:
         for index, chunk in enumerate(chunk_text(doc["narrative_text"])):
-            rows.append((f"{doc['id']}::{index}", doc["id"], index, chunk))
+            # Id format must match notebooks/ingest_weather_embeddings.py exactly.
+            # The two paths write the same rows, and a divergent id would leave
+            # the same (document_id, chunk_index) stored under two different
+            # primary keys.
+            rows.append((f"{doc['id']}_{index}", doc["id"], index, chunk))
     logger.info("Chunks to embed: %d", len(rows))
 
     insert_sql = f"""
         INSERT INTO {lakebase.EMBEDDINGS_TABLE}
             (id, document_id, chunk_index, chunk_text, embedding, model_name, created_at)
         VALUES %s
-        ON CONFLICT (id) DO UPDATE SET
+        ON CONFLICT (document_id, chunk_index) DO UPDATE SET
             chunk_text = EXCLUDED.chunk_text,
             embedding  = EXCLUDED.embedding,
             model_name = EXCLUDED.model_name,
             created_at = now()
     """
+    # Conflict on (document_id, chunk_index), NOT on id. That pair is what
+    # actually identifies a chunk; `id` is a derived string. Conflicting on `id`
+    # meant a row written by the other ingestion path under a different id
+    # spelling did not trigger the upsert - it fell through to the
+    # UNIQUE (document_id, chunk_index) constraint and raised 23505 instead.
+    # Keying on the natural key makes the two paths interchangeable even if
+    # their id formats ever drift again.
     # The %s::vector cast is what makes the column a real pgvector value on
     # insert. Binding the float list directly would store a double precision[]
     # and force a follow-up UPDATE ... ::vector that is easy to forget.

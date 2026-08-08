@@ -332,6 +332,18 @@ automatically rather than leaving a scary 0% in the output.
 
 ## 7. Known limitations / what I'd do with more time
 
+> **Fixed after review.** `ingest.py` and the notebook wrote the same chunk under
+> different primary keys (`{doc_id}::{idx}` vs `{doc_id}_{idx}`). Because both
+> upserted `ON CONFLICT (id)`, a row written by the other path did not trigger
+> the upsert — it fell through to `UNIQUE (document_id, chunk_index)` and raised
+> `23505`, so a `--rebuild-all` from either path would crash once the other had
+> run. Both paths now use the same id format **and** conflict on
+> `(document_id, chunk_index)`, the real natural key, which makes them
+> interchangeable even if the id format drifts again. Verified by running
+> `--rebuild-all` over the full corpus and by inserting a deliberately
+> divergent id for an existing chunk: it updates in place instead of raising.
+
+
 - **Stale embeddings after a document is revised.** `/weather/sync` updates
   `narrative_text` in place, but the corresponding rows in
   `weather_embeddings` are not invalidated, so the vector can lag the text

@@ -359,12 +359,16 @@ if pending:
         INSERT INTO {EMBEDDINGS_TABLE} (
             id, document_id, chunk_index, chunk_text, embedding, model_name, created_at
         ) VALUES %s
-        ON CONFLICT (id) DO UPDATE SET
+        ON CONFLICT (document_id, chunk_index) DO UPDATE SET
             chunk_text = EXCLUDED.chunk_text,
             embedding  = EXCLUDED.embedding,
             model_name = EXCLUDED.model_name,
             created_at = now()
     """
+    # Conflict on (document_id, chunk_index), NOT on id - that pair is the
+    # natural key. ingest.py writes the same rows; keying on the derived `id`
+    # string would let a divergent id format fall through to the
+    # UNIQUE (document_id, chunk_index) constraint and raise 23505.
     # The ::vector cast lives in the row template, which execute_values expands
     # once per row.
     template = "(%s, %s, %s, %s, %s::vector, %s, now())"
