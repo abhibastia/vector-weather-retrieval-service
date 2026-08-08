@@ -2,7 +2,7 @@
 
 Harvests free-text weather narratives from the National Weather Service,
 embeds them into Lakebase (Postgres + `pgvector`), and serves semantic search
-over them from a Flask REST API running as a Databricks App.
+over them from a Flask REST API.
 
 ```
 api.weather.gov ──▶ POST /weather/sync ──▶ weather_documents
@@ -14,6 +14,27 @@ api.weather.gov ──▶ POST /weather/sync ──▶ weather_documents
                     POST /weather/search ◀────────┘  cosine  <=>
                     POST /weather/answer  (RAG summary)
 ```
+
+## Deliverables map
+
+| # | Required deliverable | File |
+|---|---|---|
+| 1 | NWS API client | `weather_client.py` |
+| 2 | `POST /weather/sync` + `POST /weather/search` | `app.py` |
+| 3 | DDL for `weather_documents` + `weather_embeddings` | `lakebase.py` (`sql/` mirrors it) |
+| 4 | psycopg2 embedding ingestion script | `ingest.py` (CLI) and `notebooks/ingest_weather_embeddings.py` (Databricks job) |
+| 5 | This README | §1 source · §2 schema · §3 how to run · §7 limitations |
+
+| Stretch goal | Where |
+|---|---|
+| RAG natural-language summary | `POST /weather/answer` — §6 |
+| Dedup/upsert on `id` | `ON CONFLICT (id) DO UPDATE` in `app.py` |
+| Scheduled job re-syncing every N minutes | `resources/ingest_weather_embeddings_job.yml` (6-hourly, PAUSED) |
+| Two sources + filter by `source_type` | alerts **and** forecasts; `source_type` filter on search |
+| HNSW benchmark, with vs without index | `benchmark_hnsw.py` — results in §6 |
+
+`EVIDENCE.md` contains a verbatim transcript of the whole pipeline run against
+live Lakebase, including every edge case the brief calls out.
 
 ---
 
@@ -130,9 +151,9 @@ curl -X POST localhost:8000/weather/sync \
   -d '{"locations": ["Chicago, IL", "Miami, FL"], "limit": 50}'
 # -> {"synced": 29, "per_location": {"Chicago, IL": 14, "Miami, FL": 15}}
 
-# 2. Vectorize
-databricks bundle run ingest_weather_embeddings_job -t dev --profile <your-profile>
-#    ...or import notebooks/ingest_weather_embeddings.py and run it in the workspace
+# 2. Vectorize  (no Databricks compute needed)
+python ingest.py
+# -> Documents to process: 9 / Chunks to embed: 9 / documents=87 embeddings=97
 
 # 3. Retrieve
 curl -X POST localhost:8000/weather/search \
@@ -140,16 +161,27 @@ curl -X POST localhost:8000/weather/search \
   -d '{"query": "flash flood risk this weekend", "top_k": 5}'
 ```
 
-### Deploying the app (Git folder)
+### Optional: hosting the API as a Databricks App
 
-The app is deployed from a Databricks Git folder, so `databricks.yml`
-intentionally declares **only the job** — adding an `apps` resource would fight
-the Git-folder deployment for ownership of the same app.
+Nothing above requires Databricks compute — the API runs locally against
+Lakebase. Hosting it as a Databricks App is optional, and `app.yaml` is included
+so it can be. `databricks.yml` intentionally declares **only the job**; adding an
+`apps` resource would fight a Git-folder deployment for ownership of the app.
 
 1. Commit and push this repo.
 2. In the workspace, create/refresh a **Git folder** pointing at it.
 3. Create a Databricks App whose source is that folder (`app.yaml` is at the root).
 4. **Grant the new app's service principal read access to the secret** — see below.
+5. Set `NWS_USER_AGENT` in `app.yaml` to a real contact address.
+
+> **Not verified end to end.** At the time of writing, Databricks Apps compute
+> could not provision in the target Free Edition workspace: `apps create`
+> returned `ERROR — "App creation failed unexpectedly"` on three attempts, and
+> an unrelated app that had deployed successfully the previous day also failed
+> to start (`"Unexpectedly failed to start compute for app"`). That is a
+> platform-side failure independent of this code — the app never gets far enough
+> to read a single source file. Everything in this README was therefore verified
+> by running the same Flask app locally against the same Lakebase instance.
 
 > ### ⚠️ The step that will bite you
 > A new app gets a **new service principal**, and it needs `READ` on the
@@ -177,6 +209,13 @@ The job is **serverless** and the schedule ships **PAUSED**. A
 `new_cluster: {node_type_id: i3.xlarge}` block **cannot be deployed on
 Databricks Free Edition**, which has no classic compute — omitting all compute
 keys is what makes the notebook task run serverless.
+
+`bundle validate` and `bundle deploy` both succeed. The **run** does not, on
+Free Edition: the serverless kernel is killed while loading
+`sentence-transformers`/`torch` (`"The Python process exited unexpectedly"`,
+immediately after the model-config log line and before any embedding work).
+`ingest.py` exists for exactly this reason and is the path used for all measured
+results below. See §7.
 
 ---
 
@@ -260,10 +299,13 @@ opaque 500.
 
 ### Benchmark results (measured)
 
-| Corpus | Without index | With HNSW | Plan chosen | Speedup |
-|---|---|---|---|---|
-| Real, 88 vectors | 0.466 ms | 0.451 ms | **Seq Scan both times** | none (3%, noise) |
-| Synthetic, 50k vectors | 51.76 ms | 0.599 ms | Index Scan (HNSW) | **86× / 98.8%** |
+| Corpus | Without index | With HNSW | Plan chosen | Speedup | Recall@5 |
+|---|---|---|---|---|---|
+| Real, 97 vectors | 0.477 ms | 0.438 ms | **Seq Scan both times** | none (8%, noise) | 100% |
+| Synthetic, 50k vectors | 55.26 ms | 0.452 ms | Index Scan (HNSW) | **122× / 99.2%** | see below |
+
+Median of 15 repeats × 8 queries, timings read from Postgres' own
+`Execution Time`.
 
 Two measurement traps this benchmark had to avoid:
 
@@ -272,16 +314,19 @@ Two measurement traps this benchmark had to avoid:
    0.7 ms — 99.4% of the "latency" was the round trip to Lakebase. The
    benchmark uses `EXPLAIN (ANALYZE, FORMAT JSON)` and reads Postgres' own
    `Execution Time`.
-2. **At 88 rows the planner refuses to use HNSW at all** — correctly, since a
+2. **At ~100 rows the planner refuses to use HNSW at all** — correctly, since a
    sequential scan is cheaper. Benchmarking only the real corpus produces a
-   meaningless ~0% delta, which is why the synthetic scale test exists.
+   meaningless single-digit delta, which is why the synthetic scale test exists.
+   Reporting "HNSW made it 8% faster" off the real corpus alone would have been
+   a fabricated result: both columns ran the identical Seq Scan plan.
 
 The synthetic run reports `Recall@5 = 0.0%`, which is **an artifact, not a
 quality problem**: uniform-random 384-dim vectors are all nearly equidistant,
 and ranks 1–50 tie to six decimal places (spread `0.000000`), so the exact
 top-5 is an arbitrary pick among equally-close vectors. Real embeddings cluster
-— the same measurement on `weather_embeddings` gives a spread of `0.555` and
-**100% recall**. The benchmark detects and prints this automatically.
+— the same measurement on `weather_embeddings` in this run gives a spread of
+`0.148` and **100% recall**. The benchmark detects this and prints the caveat
+automatically rather than leaving a scary 0% in the output.
 
 ---
 
@@ -308,6 +353,17 @@ top-5 is an arbitrary pick among equally-close vectors. Real embeddings cluster
   build is at real risk of timing out. Using `databricks-gte-large-en` for both
   ingestion and query would remove `torch` entirely, at the cost of migrating
   the column to a 1024-dim schema and re-embedding the corpus.
+- **The scheduled job cannot run on Free Edition serverless.** `bundle deploy`
+  succeeds, but the run dies with `"The Python process exited unexpectedly"`
+  while loading `sentence-transformers`/`torch` — the kernel is memory-killed
+  before embedding starts. `ingest.py` is the working path and produced every
+  number in this README. Switching the job to a Databricks embedding serving
+  endpoint (`databricks-gte-large-en`) would remove `torch` from the job
+  entirely; it needs a `VECTOR(1024)` column and a full re-embed.
+- **Databricks Apps hosting is unverified.** App compute could not provision in
+  the target workspace (see §3). The Flask app is verified locally against the
+  same Lakebase instance; `app.yaml` is included and correct, but I will not
+  claim a deployment I could not observe.
 - **Sync is serial.** Two HTTP calls per location, sequentially. Fine for a
   handful of cities; a `ThreadPoolExecutor` would be needed for hundreds.
 - **No automated tests.** Verification was done end-to-end against live
