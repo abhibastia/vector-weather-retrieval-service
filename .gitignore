@@ -216,3 +216,20 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# JetBrains IDE settings (this project was opened in PyCharm/IntelliJ)
+.idea/
+
+# Local HuggingFace model cache, if you point HF_HOME into the repo by mistake
+.cache/
+
+# Course/assignment material. Not part of the deliverable, and everything in
+# this repo is synced into the Databricks Git folder the app deploys from.
+Assignment-*.pdf
+
+# Belt and braces: never commit a real connection URL or credential file.
+.env.*
+!.env.example
+*.pem
+*.key
+.databrickscfg

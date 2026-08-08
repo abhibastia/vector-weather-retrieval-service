@@ -1,0 +1,31 @@
+# Databricks Asset Bundle for the Vector Weather Retrieval Service.
+#
+# This bundle deploys ONLY the scheduled embedding job. The Flask app itself is
+# deployed separately from a Databricks Git folder (see README_WEATHER.md), so
+# there is intentionally no `apps` resource here - declaring one would fight
+# with the Git-folder deployment for ownership of the same app.
+#
+#   databricks bundle validate -t dev --profile <your-profile>
+#   databricks bundle deploy   -t dev --profile <your-profile>
+#   databricks bundle run ingest_weather_embeddings_job -t dev --profile <your-profile>
+#
+# No workspace host is pinned here on purpose. The bundle resolves it from the
+# CLI profile you pass with --profile (or from DATABRICKS_HOST), which keeps a
+# specific workspace URL out of version control and lets the same bundle deploy
+# to someone else's workspace unchanged.
+
+bundle:
+  name: vector-weather-retrieval-service
+
+include:
+  - resources/*.yml
+
+targets:
+  dev:
+    mode: development
+    default: true
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Shared/.bundle/${bundle.name}/${bundle.target}
